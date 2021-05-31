@@ -1,0 +1,9 @@
+[package]
+name = "zkmatcher"
+version = "0.1.0"
+authors = ["UINB Tech"]
+edition = "2018"
+
+[dependencies]
+dusk-plonk = "0.8.0"
+rand = "0.8.3"
