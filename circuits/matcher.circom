@@ -1,6 +1,7 @@
 include "../circomlib/comparators.circom";
+include "sparse_merkle_tree.circom";
 
-template bid_limit() {
+template BidLimitCmd() {
     signal input taker_price;
     signal input taker_amount;
     signal input maker_price;
@@ -30,7 +31,7 @@ template bid_limit() {
     trade_price <== pge.out * maker_price;
 }
 
-template ask_limit() {
+template AskLimitCmd() {
     signal input taker_price;
     signal input taker_amount;
     signal input maker_price;
@@ -60,4 +61,33 @@ template ask_limit() {
     trade_price <== pge.out * maker_price;
 }
 
-component main = bid_limit();
+template orderbook(height) {
+    signal input pair;
+    signal input ask_size;
+    // signal input bid_size;
+    // signal input best_ask_price;
+    // signal input best_bid_price;
+    signal input siblings[height];
+    signal output merkle_root;
+
+    component ask_size_addr = Hasher();
+    ask_size_addr.left <== pair;
+    // TODO undefined
+    ask_size_addr.right <== 0;
+    // component smt = SMTVerifier(height);
+    smt.root <== merkle_root;
+    smt.key <== ask_size_addr.hash;
+    smt.value <== ask_size;
+    smt.path <== siblings;
+}
+
+// template assets(merkle_level) {
+//     signal input account;
+//     signal input tradable;
+//     signal input frozen;
+//     signal input siblings[merkle_level];
+//     signal output merkle_root;
+// }
+
+
+component main = BidLimitCmd();
