@@ -18,6 +18,7 @@ template SMTVerifier(height) {
     signal input path[height];
 
     component hasher[height];
+    var i;
     for (i=0; i<height; i++) {
         hasher[i] = Hasher();
         if (i==0) {
@@ -30,7 +31,7 @@ template SMTVerifier(height) {
         }
     }
     component check_root = ForceEqualIfEnabled();
-    check_root.enabled <== enabled;
+    check_root.enabled <== 1;
     check_root.in[0] <== hasher[height-1].hash;
     check_root.in[1] <== root;
 }
