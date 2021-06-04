@@ -1,1 +1,4 @@
 /target
+*.sym
+*.wasm
+*.r1cs

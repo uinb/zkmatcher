@@ -1,64 +1,83 @@
 include "../circomlib/comparators.circom";
+include "../circomlib/gates.circom";
 include "sparse_merkle_tree.circom";
 
-template BidLimitCmd() {
+/*
+* merkle_tree: node_v: hash((v!=0)*k, v)
+*   hash(hash(b,q), not(ask_or_bid)) -> hash(new_size, (new_size!=0)*new_best_price) //hash2
+*   hash(hash(b,q), maker_order_id) -> hash((maker_remain!=0)*maker_account, (maker_remain!=0)*maker_price, maker_remain) //hash3
+*   hash(hash(b,q), taker_order_id) -> hash((taker_remain!=0 and maker_remain!=0)*taker_account, (taker_remain!=0 and maker_remain!=0)*taker_price, taker_remain) //hash3
+*   hash(hash(b,q), ask_or_bid) -> hash(new_size, (new_size!=0)*taker_price) //hash2
+*/
+template TradeLimitCmd() {
+    signal input new_merkle_root;
+
+    signal input base_currency;
+    signal input quote_currency;
+
+    // ask -- 0
+    // bid -- 1
+    signal input ask_or_bid;
+    signal input oppo_size;
+    signal input size;
+    signal input orderbook_ask_path[256];
+    signal input orderbook_bid_path[256];
+
+    signal input taker_order_id;
+    signal input taker_account;
     signal input taker_price;
     signal input taker_amount;
+    signal input taker_order_path[256];
+
+    signal input maker_order_id;
+    signal input maker_account;
     signal input maker_price;
     signal input maker_amount;
+    signal input maker_order_path[256];
+
     signal output trade_amount;
     signal output trade_price;
+    signal output taker_remain;
+    signal output maker_remain;
 
-    component age = GreaterEqThan(128);
-    age.in[0] <== taker_amount;
-    age.in[1] <== maker_amount;
-    signal v1;
-    v1 <-- maker_amount * age.out;
-
-    component alt = LessThan(128);
-    alt.in[0] <== taker_amount;
-    alt.in[1] <== maker_amount;
-    signal v2;
-    v2 <-- taker_amount * alt.out;
-
-    signal a;
-    a <-- v1 + v2;
-    
+    // if bid1, ge
     component pge = GreaterEqThan(128);
     pge.in[0] <== taker_price;
     pge.in[1] <== maker_price;
-    trade_amount <== pge.out * a;
-    trade_price <== pge.out * maker_price;
-}
+    component and0 = AND();
+    and0.a <== pge.out;
+    and0.b <== ask_or_bid;
+    // if ask0, le
+    component ple = LessEqThan(128);
+    ple.in[0] <== taker_price;
+    ple.in[1] <== maker_price;
+    component not = NOT();
+    not.int <== ask_or_bid;
+    component and1 = AND();
+    and1.a <== not.out;
+    and1.b <== ple.out;
 
-template AskLimitCmd() {
-    signal input taker_price;
-    signal input taker_amount;
-    signal input maker_price;
-    signal input maker_amount;
-    signal output trade_amount;
-    signal output trade_price;
+    component or = OR();
+    or.a <== and0.out;
+    or.b <== and1.out;
 
     component age = GreaterEqThan(128);
     age.in[0] <== taker_amount;
     age.in[1] <== maker_amount;
     signal v1;
     v1 <-- maker_amount * age.out;
-
     component alt = LessThan(128);
     alt.in[0] <== taker_amount;
     alt.in[1] <== maker_amount;
     signal v2;
     v2 <-- taker_amount * alt.out;
-
     signal a;
     a <-- v1 + v2;
     
-    component pge = LessEqThan(128);
-    pge.in[0] <== taker_price;
-    pge.in[1] <== maker_price;
-    trade_amount <== pge.out * a;
-    trade_price <== pge.out * maker_price;
+    trade_amount <== or.out * a;
+    trade_price <== or.out * maker_price;
+    taker_remain <== taker_amount - trade_amount;
+    maker_remain <== maker_amount - trade_amount;
 }
 
 template TradableAssetsValidator() {
