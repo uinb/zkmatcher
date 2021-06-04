@@ -1,5 +1,6 @@
 include "../circomlib/comparators.circom";
 include "../circomlib/gates.circom";
+include "../circomlib/poseidon.circom";
 include "sparse_merkle_tree.circom";
 
 /*
@@ -19,9 +20,10 @@ template TradeLimitCmd() {
     // bid -- 1
     signal input ask_or_bid;
     signal input oppo_size;
-    signal input size;
-    signal input orderbook_ask_path[256];
-    signal input orderbook_bid_path[256];
+    signal input self_size;
+    signal input next_best_price;
+    signal input orderbook_self_path[256];
+    signal input orderbook_oppo_path[256];
 
     signal input taker_order_id;
     signal input taker_account;
@@ -35,8 +37,6 @@ template TradeLimitCmd() {
     signal input maker_amount;
     signal input maker_order_path[256];
 
-    signal output trade_amount;
-    signal output trade_price;
     signal output taker_remain;
     signal output maker_remain;
 
@@ -52,7 +52,7 @@ template TradeLimitCmd() {
     ple.in[0] <== taker_price;
     ple.in[1] <== maker_price;
     component not = NOT();
-    not.int <== ask_or_bid;
+    not.in <== ask_or_bid;
     component and1 = AND();
     and1.a <== not.out;
     and1.b <== ple.out;
@@ -73,12 +73,50 @@ template TradeLimitCmd() {
     v2 <-- taker_amount * alt.out;
     signal a;
     a <-- v1 + v2;
-    
-    trade_amount <== or.out * a;
-    trade_price <== or.out * maker_price;
-    taker_remain <== taker_amount - trade_amount;
-    maker_remain <== maker_amount - trade_amount;
+
+    signal traded;
+    traded <-- or.out * a;
+    taker_remain <== taker_amount - traded;
+    maker_remain <== maker_amount - traded;
+
+    var i;
+    component bq = Poseidon(2);
+    bq.inputs[0] <== base_currency;
+    bq.inputs[1] <== quote_currency;
+
+    // c1k = hash(hash(b,q), not(ask_or_bid))
+    component c1k = Poseidon(2);
+    c1k.inputs[0] <== bq.out;
+    c1k.inputs[1] <== not.out;
+
+    // c1v = hash(oppo_size - traded, is_not_zero(oppo_size - traded) * next_best_price)
+    component c1v = Poseidon(2);
+    c1v.inputs[0] <== oppo_size - traded;
+    component is_zero = IsZero();
+    is_zero.in <== oppo_size - traded;
+    component is_not_zero = NOT();
+    is_not_zero.in <== is_zero.out;
+    c1v.inputs[1] <== is_not_zero.out * next_best_price;
+
+    // c1kv = hash(c1k, c1v)
+    component c1kv = Poseidon(2);
+    c1kv.inputs[0] <== c1k.out * is_not_zero.out;
+    c1kv.inputs[1] <== c1v.out;
+
+    component c1_verifier = SMTVerifier(256);
+    c1_verifier.key <== c1k.out;
+    c1_verifier.value <== c1kv.out
+    c1_verifier.root <== new_merkle_root;
+    for (i=0; i<256; i++) c1_verifier.path[i] <== orderbook_oppo_path[i];
+
+/*
+* 2. hash(hash(b,q), maker_order_id) -> hash((maker_remain!=0)*maker_account, (maker_remain!=0)*maker_price, maker_remain) 
+* 3. hash(hash(b,q), taker_order_id) -> hash((taker_remain!=0 and maker_remain!=0)*taker_account, (taker_remain!=0 and maker_remain!=0)*taker_price, taker_remain) 
+* 4. hash(hash(b,q), ask_or_bid) -> hash(size+taker_remain, (size+taker_remain!=0)*taker_price) 
+*/
 }
+
+
 
 template TradableAssetsValidator() {
     signal input account_id;
@@ -135,4 +173,4 @@ template OrderbookValidator() {
 //     signal input pair;
 // }
 
-component main = OrderbookValidator();
+component main = TradeLimitCmd();
