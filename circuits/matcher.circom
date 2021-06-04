@@ -116,25 +116,33 @@ template TradeLimitCmd() {
 */
 }
 
-
-
+/*
+*   hash(account_id, assets_id) -> hash(hash(account_id, assets_id), hash(tradable, frozen))
+*/
 template TradableAssetsValidator() {
     signal input account_id;
-    signal input assets;
+    signal input assets_id;
     signal input tradable;
+    signal input frozen;
     signal input merkle_root;
     signal input path[256];
 
-    component account = Hasher();
-    account.left <== account_id;
-    account.right <== assets;
-    component leaf = Hasher();
-    leaf.left <== account.hash;
-    leaf.right <== tradable;
+    component key = Poseidon(2);
+    key.inputs[0] <== account_id;
+    key.inputs[1] <== assets_id;
+
+    component value = Poseidon(2);
+    value.inputs[0] <== tradable;
+    value.inputs[1] <== fronzen;
+
+    component kv = Poseidon(2);
+    kv.inputs[0] <== key.out;
+    kv.inputs[1] <== value.out;
+
     component smt = SMTVerifier(256);
     smt.root <== merkle_root;
-    smt.key <== leaf.hash;
-    smt.value <== assets;
+    smt.key <== key.out;
+    smt.value <== kv.out;
     var i;
     for (i=0; i<256; i++) smt.path[i] <== path[i];
 }
