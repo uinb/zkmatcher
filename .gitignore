@@ -2,3 +2,6 @@
 *.sym
 *.wasm
 *.r1cs
+*.ptau
+*.bin
+*.key
