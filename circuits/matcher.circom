@@ -7,12 +7,24 @@ include "sparse_merkle_tree.circom";
 * TODO: merkle root step-by-step
 *
 * merkle tree:
-*   k -> hash((v!=0)*k, v) where k, v in :
+*   k -> hash((v!=0)*k, v) where k, v in:
 *     1. hash(hash(b,q), ask_or_bid); hash(size, best)
-*     2. hash(order_id); hash(owner, amount, price)
+*     2. hash(order_id); hash(owner, amount, price, ask_or_bid + 1)
 *     3. hash(account, currency); hash(tradable, frozen)
+*   update order:
+*     1. taker account, old_root -> root1
+*     2. oppo tape, root1 -> root2
+*     3. self tape, root2 -> root3
+*     4. maker order, root3 -> root4
+*     5. taker order, root4 -> root5
+*     6. maker base account, root5 -> root6
+*     7. maker quote account, root6 -> root7
+*     8. taker base account, root7 -> root8
+*     9. taker quote account, root8 -> new_root
 */
 template TradeLimitCmd() {
+    signal input enable;
+    signal input old_merkle_root;
     signal input new_merkle_root;
 
     signal input base_currency;
@@ -26,40 +38,194 @@ template TradeLimitCmd() {
     signal input self_size;
     // next maker
     signal input next_best_price;
+    // TODO mark as order=5
     signal input orderbook_self_path[256];
+    // TODO order=2
     signal input orderbook_oppo_path[256];
 
     signal input taker_order_id;
     signal input taker_account;
     signal input taker_price;
-    signal input taker_amount; // before traded
+    signal input taker_amount;
+    // TODO order=4
     signal input taker_order_path[256];
 
     signal input taker_fee;
     signal input taker_quote_tradable;
     signal input taker_quote_frozen;
-    signal input taker_quote_path[256];
     signal input taker_base_tradable;
     signal input taker_base_frozen;
-    signal input taker_base_path[256];
+    // TODO order=1
+    signal input taker_account_path[256];
+    // TODO order=7
+    signal input taker_account_clear_path[256];
 
     signal input maker_order_id;
     signal input maker_account;
     signal input maker_price;
-    signal input maker_amount; // before traded
+    signal input maker_amount;
+    // TODO order=3
     signal input maker_order_path[256];
 
     signal input maker_fee;
     signal input maker_quote_tradable;
     signal input maker_quote_frozen;
-    signal input maker_quote_path[256];
     signal input maker_base_tradable;
     signal input maker_base_frozen;
-    signal input maker_base_path[256];
+    // TODO order=6
+    signal input maker_account_clear_path[256];
 
     signal taker_remain;
     signal maker_remain;
 
+    // ======== basic parameters ========
+    var i;
+    component bid_or_ask = NOT();
+    bid_or_ask.in <== ask_or_bid;
+    component bq = Poseidon(2);
+    bq.inputs[0] <== base_currency;
+    bq.inputs[1] <== quote_currency;
+
+    // taker frozen currency
+    signal taker_frozen_currency_ifb;
+    taker_frozen_currency_ifb <== quote_currency * ask_or_bid;
+    signal taker_frozen_currency_ifa;
+    taker_frozen_currency_ifa <== base_currency * bid_or_ask.out;
+    signal taker_frozen_currency;
+    taker_frozen_currency <== taker_frozen_currency_ifb + taker_frozen_currency_ifa;
+
+    // maker frozen currency
+    signal maker_frozen_currency_ifb;
+    maker_frozen_currency_ifb <== base_currency * ask_or_bid;
+    signal maker_frozen_currency_ifa;
+    maker_frozen_currency_ifa <== quote_currency * bid_or_ask.out;
+    signal maker_frozen_currency;
+    maker_frozen_currency <== maker_frozen_currency_ifb + maker_frozen_currency_ifa;
+
+    // taker account
+    signal taker_pay_tradable_account;
+    signal taker_pay_frozen_account;
+    signal taker_rev_tradable_account;
+    signal taker_rev_frozen_account;
+
+    signal taker_pay_tradable_account_ifb;
+    signal taker_pay_tradable_account_ifa;
+    signal taker_pay_frozen_account_ifb;
+    signal taker_pay_frozen_account_ifa;
+    signal taker_rev_tradable_account_ifb;
+    signal taker_rev_tradable_account_ifa;
+    signal taker_rev_frozen_account_ifb;
+    signal taker_rev_frozen_account_ifa;
+
+    taker_pay_tradable_account_ifb <== taker_quote_tradable * ask_or_bid;
+    taker_pay_frozen_account_ifb <== taker_quote_frozen * ask_or_bid;
+    taker_rev_tradable_account_ifb <== taker_base_tradable * ask_or_bid;
+    taker_rev_frozen_account_ifb <== taker_base_frozen * ask_or_bid;
+    taker_pay_tradable_account_ifa <== taker_base_tradable * bid_or_ask.out;
+    taker_pay_frozen_account_ifa <== taker_base_frozen * bid_or_ask.out;
+    taker_rev_tradable_account_ifa <== taker_quote_tradable * bid_or_ask.out;
+    taker_rev_frozen_account_ifa <== taker_quote_frozen * bid_or_ask.out;
+    taker_pay_tradable_account <== taker_pay_tradable_account_ifb + taker_pay_tradable_account_ifa;
+    taker_pay_frozen_account <== taker_pay_frozen_account_ifb + taker_pay_frozen_account_ifa;
+    taker_rev_tradable_account <== taker_rev_tradable_account_ifb + taker_rev_tradable_account_ifa;
+    taker_rev_frozen_account <== taker_rev_frozen_account_ifb + taker_rev_frozen_account_ifa;
+
+    // maker account;
+    signal maker_rev_tradable_account;
+    signal maker_rev_frozen_account;
+    signal maker_pay_tradable_account;
+    signal maker_pay_frozen_account;
+
+    signal maker_rev_tradable_account_ifb;
+    signal maker_rev_tradable_account_ifa;
+    signal maker_rev_frozen_account_ifb;
+    signal maker_rev_frozen_account_ifa;
+    signal maker_pay_tradable_account_ifb;
+    signal maker_pay_tradable_account_ifa;
+    signal maker_pay_frozen_account_ifb;
+    signal maker_pay_frozen_account_ifa;
+
+    maker_rev_tradable_account_ifb <== maker_quote_tradable * ask_or_bid;
+    maker_rev_frozen_account_ifb <== maker_quote_frozen * ask_or_bid;
+    maker_pay_tradable_account_ifb <== maker_base_tradable * ask_or_bid;
+    maker_pay_frozen_account_ifb <== maker_base_frozen * ask_or_bid;
+    maker_rev_tradable_account_ifa <== maker_base_tradable * bid_or_ask.out;
+    maker_rev_frozen_account_ifa <== maker_base_frozen * bid_or_ask.out;
+    maker_pay_tradable_account_ifa <== maker_quote_tradable * bid_or_ask.out;
+    maker_pay_frozen_account_ifa <== maker_quote_frozen * bid_or_ask.out;
+    maker_rev_tradable_account <== maker_rev_tradable_account_ifb + maker_rev_tradable_account_ifa;
+    maker_rev_frozen_account <== maker_rev_frozen_account_ifb + maker_rev_frozen_account_ifa;
+    maker_pay_tradable_account <== maker_pay_tradable_account_ifb + maker_pay_tradable_account_ifa;
+    maker_pay_frozen_account <== maker_pay_frozen_account_ifb + maker_pay_frozen_account_ifa;
+
+    // taker frozen amount
+    signal taker_vol;
+    taker_vol <== taker_amount * taker_price;
+    signal taker_frozen_ifb;
+    taker_frozen_ifb <== taker_vol * ask_or_bid;
+    signal taker_frozen_ifa;
+    taker_frozen_ifa <== taker_amount * bid_or_ask.out;
+    signal taker_frozen;
+    taker_frozen <== taker_frozen_ifb + taker_frozen_ifa;
+
+    // maker frozen amount
+    signal maker_frozen_ifb;
+    maker_frozen_ifb <== maker_amount * ask_or_bid;
+    signal maker_vol;
+    maker_vol <== maker_amount * maker_price;
+    signal maker_frozen_ifa;
+    maker_frozen_ifa <== maker_vol * bid_or_ask.out;
+    signal maker_frozen;
+    maker_frozen <== maker_frozen_ifb + maker_frozen_ifa;
+
+    //======== taker: tradable_base>=frozen_amount or trablable_quote>=frozen_amount ========
+    component taker_tq_ge = GreaterEqThan(128);
+    taker_tq_ge.in[0] <== taker_quote_tradable * ask_or_bid;
+    taker_tq_ge.in[1] <== taker_frozen_ifb;
+    component taker_tb_ge = GreaterEqThan(128);
+    taker_tb_ge.in[0] <== taker_base_tradable * bid_or_ask.out;
+    taker_tb_ge.in[1] <== taker_frozen_ifa;
+    component tqtb = AND();
+    tqtb.a <== taker_tq_ge.out;
+    tqtb.b <== taker_tb_ge.out;
+    component check_taker = ForceEqualIfEnabled();
+    check_taker.enabled <== enable;
+    check_taker.in[0] <== tqtb.out;
+    check_taker.in[1] <== 1;
+
+    //======== maker: freezed_base>=frozen_amount or freezed_quote>=frozen_amount ========
+    component maker_fb_ge = GreaterEqThan(128);
+    maker_fb_ge.in[0] <== maker_base_frozen * ask_or_bid;
+    maker_fb_ge.in[1] <== maker_frozen_ifb;
+    component maker_fq_ge = GreaterEqThan(128);
+    maker_fq_ge.in[0] <== maker_quote_frozen * bid_or_ask.out;
+    maker_fq_ge.in[1] <== maker_frozen_ifa;
+    component mqmb = AND();
+    mqmb.a <== maker_fb_ge.out;
+    mqmb.b <== maker_fq_ge.out;
+    component check_maker = ForceEqualIfEnabled();
+    check_maker.enabled <== enable;
+    check_maker.in[0] <== mqmb.out;
+    check_maker.in[1] <== 1;
+
+    //======== calculate root1 after frezze the taker ========
+    component taker_frozen_account = Poseidon(2);
+    taker_frozen_account.inputs[0] <== taker_account;
+    taker_frozen_account.inputs[1] <== taker_frozen_currency;
+    component taker_claimed_account_val = Poseidon(2);
+    taker_claimed_account_val.inputs[0] <== taker_pay_tradable_account;
+    taker_claimed_account_val.inputs[1] <== taker_pay_frozen_account;
+    component taker_updated_account_val = Poseidon(2);
+    taker_updated_account_val.inputs[0] <== taker_pay_tradable_account - taker_frozen;
+    taker_updated_account_val.inputs[1] <== taker_pay_frozen_account + taker_frozen;
+    component root1 = SMT(256);
+    root1.old_root <== old_merkle_root;
+    root1.key <== taker_frozen_account.out;
+    root1.old_value <== taker_claimed_account_val.out;
+    root1.new_value <== taker_updated_account_val.out;
+    for (i=0; i<256; i++) root1.path[i] <== taker_account_path[i];
+
+    //======== calculate the trade amount ========
     // if bid1, ge
     component pge = GreaterEqThan(128);
     pge.in[0] <== taker_price;
@@ -67,33 +233,26 @@ template TradeLimitCmd() {
     component and0 = AND();
     and0.a <== pge.out;
     and0.b <== ask_or_bid;
-
     // if ask0, le
     component ple = LessEqThan(128);
     ple.in[0] <== taker_price;
     ple.in[1] <== maker_price;
-    component not = NOT();
-    not.in <== ask_or_bid;
     component and1 = AND();
-    and1.a <== not.out;
-    and1.b <== ple.out;
-
+    and1.a <== ple.out;
+    and1.b <== bid_or_ask.out;
     // taker >= best when bid or taker <= best when ask, output 1 or 0
     component or = OR();
     or.a <== and0.out;
     or.b <== and1.out;
-
     // we need ensure maker exists
     component maker_not_exists = IsZero();
     maker_not_exists.in <== maker_order_id;
     component maker_exists = NOT();
     maker_exists.in <== maker_not_exists.out;
-
     // final gate
     component final_condition = AND();
     final_condition.a <== maker_exists.out;
     final_condition.b <== or.out;
-
     // min(taker, maker)
     component age = GreaterEqThan(128);
     age.in[0] <== taker_amount;
@@ -107,22 +266,17 @@ template TradeLimitCmd() {
     v2 <-- taker_amount * alt.out;
     signal a;
     a <-- v1 + v2;
-
     // final traded amount
     signal traded;
     traded <-- final_condition.out * a;
     taker_remain <== taker_amount - traded;
     maker_remain <== maker_amount - traded;
 
-    var i;
-    component bq = Poseidon(2);
-    bq.inputs[0] <== base_currency;
-    bq.inputs[1] <== quote_currency;
-
+    //======== update oppo tape ========
     // c1k = hash(hash(b,q), not(ask_or_bid))
     component c1k = Poseidon(2);
     c1k.inputs[0] <== bq.out;
-    c1k.inputs[1] <== not.out;
+    c1k.inputs[1] <== bid_or_ask.out;
 
     // c1v = hash(oppo_size - traded, is_not_zero(oppo_size - traded) * next_best_price)
     component c1v = Poseidon(2);
@@ -138,12 +292,14 @@ template TradeLimitCmd() {
     c1kv.inputs[0] <== c1k.out * is_oppo_not_empty.out;
     c1kv.inputs[1] <== c1v.out;
 
-    component c1_verifier = SMTVerifier(256);
-    c1_verifier.key <== c1k.out;
-    c1_verifier.value <== c1kv.out
-    c1_verifier.root <== new_merkle_root;
-    for (i=0; i<256; i++) c1_verifier.path[i] <== orderbook_oppo_path[i];
-
+    // root1 --> root2
+    // component root2 = SMT(256);
+    // root2.old_root <== root1.new_root;
+    // root2.key <== c1k.out;
+    // root2.old_value <== ;
+    // root2.new_value <== ;
+    // for (i=0; i<256; i++) root2.path[i] <== orderbook_oppo_path[i];
+    
     // c2k = hash(maker_order_id)
     component c2k = Poseidon(1);
     c2k.inputs[0] <== maker_order_id;
@@ -220,83 +376,6 @@ template TradeLimitCmd() {
     c4_verifier.value <== c4kv.out
     c4_verifier.root <== new_merkle_root;
     for (i=0; i<256; i++) c4_verifier.path[i] <== orderbook_self_path[i];
-
-    //taker_base: +tradable(traded * (1 - taker_fee)) or +frozen(should_place * remain)
-    component taker_base = AssetsValidator();
-    taker_base.account_id <== taker_account;
-    taker_base.assets_id <== base_currency;
-    signal egbt;
-    egbt <== traded * taker_fee;
-    signal tgb;
-    tgb <== traded - egbt;
-    signal ifb_tgb;
-    ifb_tgb <== tgb * ask_or_bid;
-    taker_base.tradable <== taker_base_tradable + ifb_tgb;
-    signal trb;
-    trb <== should_place.out * taker_remain;
-    signal ifa_trb;
-    ifa_trb <== trb * not.out;
-    taker_base.frozen <== taker_base_frozen + ifa_trb;
-    taker_base.merkle_root <== new_merkle_root;
-    for (i=0; i<256; i++) taker_base.path[i] <== taker_base_path[i];
-
-    //maker_base: -frozen(traded) or +tradable(traded * (1 - maker_fee))
-    component maker_base = AssetsValidator();
-    maker_base.account_id <== maker_account;
-    maker_base.assets_id <== base_currency;
-    signal ifb_traded;
-    ifb_traded <== ask_or_bid * traded;
-    maker_base.frozen <== taker_base_frozen - ifb_traded;
-    signal egbm;
-    egbm <== traded * maker_fee;
-    signal mgb;
-    mgb <== traded - egbm;
-    signal ifa_mgb;
-    ifa_mgb <== mgb * not.out;
-    maker_base.tradable <== maker_base_tradable + ifa_mgb;
-    maker_base.merkle_root <== new_merkle_root;
-    for (i=0; i<256; i++) maker_base.path[i] <== maker_base_path[i];
-
-    //taker_quote: +frozen(should_place * remain * price) or +tradable(traded * price * (1 - taker_fee))
-    component taker_quote = AssetsValidator();
-    taker_quote.account_id <== taker_account;
-    taker_quote.assets_id <== quote_currency;
-    signal frozen_vol;
-    frozen_vol <== taker_remain * taker_price;
-    signal should_frozen_vol;
-    should_frozen_vol <== should_place.out * frozen_vol;
-    signal ifb_frozen_vol;
-    ifb_frozen_vol <== ask_or_bid * should_frozen_vol;
-    taker_quote.frozen <== taker_quote_frozen + ifb_frozen_vol;
-    signal vol;
-    tgq <== traded * price;
-    signal egqt;
-    egqt <== tgq * taker_fee;
-    signal tgq;
-    tgq <== vol - egqt;
-    signal ifa_tgq;
-    ifa_tgq <== tgq * not.out;
-    taker_quote.tradable <== taker_quote_tradable + ifa_tgq;
-    taker_quote.merkle_root <== new_merkle_root;
-    for (i=0; i<256; i++) taker_quote.path[i] <== taker_quote_path[i];
-
-    //maker_quote: +tradable(traded * price * (1 - maker_fee)) or -frozen(traded * price)
-    component maker_quote = AssetsValidator();
-    maker_quote.account_id <== maker_account;
-    maker_quote.assets_id <== quote_currency;
-    signal maker_vol;
-    maker_vol <== traded * price;
-    signal quote_fee;
-    quote_fee <= maker_vol * maker_fee;
-    signal vol_fee_excluded;
-    vol_fee_excluded <== vol - quote_fee;
-    signal ifb_to_maker;
-    ifb_to_maker_quote <== vol_fee_excluded * ask_or_bid;
-    maker_quote.tradable <== maker_quote_tradable + ifb_to_maker_quote;
-    ifa_from_maker_quote <== vol * not.out;
-    maker_quote.frozen <== maker_quote_frozen - ifa_from_maker_quote;
-    maker_quote.merkle_root <== new_merkle_root;
-    for (i=0; i<256; i++) maker_quote.path[i] <== maker_quote_path[i];
 }
 
 /*

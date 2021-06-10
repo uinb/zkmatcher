@@ -50,7 +50,6 @@ template SMT(height) {
     var i;
     for (i=0;i<height;i++) verifier.path[i] <== path[i];
     component hasher[height];
-    var i;
     for (i=0; i<height; i++) {
         hasher[i] = Hasher();
         if (i==0) {
