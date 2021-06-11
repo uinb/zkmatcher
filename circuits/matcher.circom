@@ -4,13 +4,15 @@ include "../circomlib/poseidon.circom";
 include "sparse_merkle_tree.circom";
 
 /*
-* TODO: merkle root step-by-step
 *
+* H(ø) = H(ø, ø)
+* H(ø, X) = H(X, ø)
+* 
 * merkle tree:
-*   k -> hash((v!=0)*k, v) where k, v in:
-*     1. hash(hash(b,q), ask_or_bid); hash(size, best)
-*     2. hash(order_id); hash(owner, amount, price, ask_or_bid + 1)
-*     3. hash(account, currency); hash(tradable, frozen)
+*   k -> H(¬v*k, v) where k, v in:
+*     1. H(H(b,q), ask_or_bid); H(size, best)
+*     2. H(order_id); H(owner, amount, price, ask_or_bid + 2)
+*     3. H(account, currency); H(tradable, frozen)
 *   update order:
 *     1. taker account, old_root -> root1
 *     2. oppo tape, root1 -> root2
@@ -178,7 +180,7 @@ template TradeLimitCmd() {
     signal maker_frozen;
     maker_frozen <== maker_frozen_ifb + maker_frozen_ifa;
 
-    //======== taker: tradable_base>=frozen_amount or trablable_quote>=frozen_amount ========
+    //======== taker: tradable_base ≥ frozen_amount or trablable_quote ≥ frozen_amount ========
     component taker_tq_ge = GreaterEqThan(128);
     taker_tq_ge.in[0] <== taker_quote_tradable * ask_or_bid;
     taker_tq_ge.in[1] <== taker_frozen_ifb;
@@ -193,7 +195,7 @@ template TradeLimitCmd() {
     check_taker.in[0] <== tqtb.out;
     check_taker.in[1] <== 1;
 
-    //======== maker: freezed_base>=frozen_amount or freezed_quote>=frozen_amount ========
+    //======== maker: freezed_base ≥ frozen_amount or freezed_quote ≥ frozen_amount ========
     component maker_fb_ge = GreaterEqThan(128);
     maker_fb_ge.in[0] <== maker_base_frozen * ask_or_bid;
     maker_fb_ge.in[1] <== maker_frozen_ifb;
@@ -240,7 +242,7 @@ template TradeLimitCmd() {
     component and1 = AND();
     and1.a <== ple.out;
     and1.b <== bid_or_ask.out;
-    // taker >= best when bid or taker <= best when ask, output 1 or 0
+    // taker ≥ best when bid or taker ≤ best when ask, output 1 or 0
     component or = OR();
     or.a <== and0.out;
     or.b <== and1.out;
@@ -273,12 +275,26 @@ template TradeLimitCmd() {
     maker_remain <== maker_amount - traded;
 
     //======== update oppo tape ========
-    // c1k = hash(hash(b,q), not(ask_or_bid))
+    // c1k = H(H(b,q), ¬ask_or_bid)
     component c1k = Poseidon(2);
     c1k.inputs[0] <== bq.out;
     c1k.inputs[1] <== bid_or_ask.out;
 
-    // c1v = hash(oppo_size - traded, is_not_zero(oppo_size - traded) * next_best_price)
+    // c1v_old = H(oppo_size, is_not_zero(oppo_size) * next_best_price)
+    component c1v_old = Poseidon(2);
+    component is_old_oppo_empty = IsZero();
+    is_old_oppo_empty.in <== oppo_size;
+    component is_old_oppo_not_empty = NOT();
+    is_old_oppo_not_empty.in <== is_old_oppo_empty.out;
+    c1v_old.inputs[0] <== oppo_size;
+    c1v_old.inputs[1] <== is_old_oppo_not_empty.out * next_best_price;
+
+    // c1kv_old = H(c1k, c1v_old)
+    component c1kv_old = Poseidon(2);
+    c1kv_old.inputs[0] <== c1k.out * is_old_oppo_not_empty.out;
+    c1kv_old.inputs[1] <== c1v_old.out;
+
+    // c1v = H(oppo_size - traded, is_not_zero(oppo_size - traded) * next_best_price)
     component c1v = Poseidon(2);
     c1v.inputs[0] <== oppo_size - traded;
     component is_oppo_empty = IsZero();
@@ -287,25 +303,44 @@ template TradeLimitCmd() {
     is_oppo_not_empty.in <== is_oppo_empty.out;
     c1v.inputs[1] <== is_oppo_not_empty.out * next_best_price;
 
-    // c1kv = hash(c1k, c1v)
+    // c1kv = H(c1k, c1v)
     component c1kv = Poseidon(2);
     c1kv.inputs[0] <== c1k.out * is_oppo_not_empty.out;
     c1kv.inputs[1] <== c1v.out;
 
     // root1 --> root2
-    // component root2 = SMT(256);
-    // root2.old_root <== root1.new_root;
-    // root2.key <== c1k.out;
-    // root2.old_value <== ;
-    // root2.new_value <== ;
-    // for (i=0; i<256; i++) root2.path[i] <== orderbook_oppo_path[i];
+    component root2 = SMT(256);
+    root2.old_root <== root1.new_root;
+    root2.key <== c1k.out;
+    root2.old_value <== c1kv_old.out;
+    root2.new_value <== c1kv.out;
+    for (i=0; i<256; i++) root2.path[i] <== orderbook_oppo_path[i];
     
-    // c2k = hash(maker_order_id)
+    // c2k = H(maker_order_id)
     component c2k = Poseidon(1);
     c2k.inputs[0] <== maker_order_id;
 
-    // c2v = hash((maker_remain!=0)*maker_account, maker_remain, (maker_remain!=0)*maker_price);
-    component c2v = Poseidon(3);
+    signal mab;
+    mab <== bid_or_ask.out + 2;
+    component is_maker_not_exists = IsZero();
+    is_maker_not_exists.in <== maker_order_id;
+    component is_maker_exists = NOT();
+    is_maker_exists.in <== is_maker_not_exists.out;
+
+    // c2v_old
+    component c2v_old = Poseidon(4);
+    c2v_old.inputs[0] <== maker_account;
+    c2v_old.inputs[1] <== maker_amount;
+    c2v_old.inputs[2] <== maker_price;
+    c2v_old.inputs[3] <== mab * is_maker_exists.out;
+
+    // c2kv_old
+    component c2kv_old = Poseidon(2);
+    c2kv_old.inputs[0] <== c2k.out;
+    c2kv_old.inputs[1] <== c2v_old.out;
+
+    // c2v = H((maker_remain!=0)*maker_account, maker_remain, (maker_remain!=0)*maker_price, +2);
+    component c2v = Poseidon(4);
     component is_maker_zero = IsZero();
     is_maker_zero.in <== maker_amount - traded;
     component is_maker_not_zero = NOT();
@@ -313,69 +348,73 @@ template TradeLimitCmd() {
     c2v.inputs[0] <== maker_account * is_maker_not_zero.out;
     c2v.inputs[1] <== maker_remain;
     c2v.inputs[2] <== maker_price * is_maker_not_zero.out;
+    c2v.inputs[3] <== mab * is_maker_not_zero.out;
 
-    // c2kv = hash(c2k, c2v)
+    // c2kv = H(c2k, c2v)
     component c2kv = Poseidon(2);
     c2kv.inputs[0] <== c2k.out * is_maker_not_zero.out;
     c2kv.inputs[1] <== c2v.out;
 
-    component c2_verifier = SMTVerifier(256);
-    c2_verifier.key <== c2k.out;
-    c2_verifier.value <== c2kv.out
-    c2_verifier.root <== new_merkle_root;
-    for (i=0; i<256; i++) c2_verifier.path[i] <== maker_order_path[i];
+    // root2 --> root3
+    component root3 = SMT(256);
+    root3.old_root <== root2.new_root;
+    root3.key <== c2k.out;
+    root3.old_value <== c2kv_old.out;
+    root3.new_value <== c2kv.out;
+    for (i=0; i<256; i++) root3.path[i] <== maker_order_path[i];
 
-    // c3k = hash(taker_order_id)
-    component c3k = Poseidon(1);
-    c3k.inputs[0] <== taker_order_id;
+    // place order:
+    //    taker_amount
+    // c3k = H(taker_order_id)
+    // component c3k = Poseidon(1);
+    // c3k.inputs[0] <== taker_order_id;
+    // // c3v = H((taker_remain!=0 and traded==0)*taker_account, (taker_remain!=0 and traded==0)*taker_remain, (taker_remain!=0 and traded==0)*taker_price)
+    // component c3v = Poseidon(3);
+    // component is_taker_zero = IsZero();
+    // is_taker_zero.in <== taker_amount - traded;
+    // component is_taker_not_zero = NOT();
+    // is_taker_not_zero.in <== is_taker_zero.out;
+    // component is_traded_zero = IsZero();
+    // is_traded_zero.in <== traded;
+    // component should_place = AND();
+    // should_place.a <== is_maker_not_zero.out;
+    // should_place.b <== is_traded_zero.out;
+    // c3v.inputs[0] <== taker_account * should_place.out;
+    // c3v.inputs[1] <== taker_remain * should_place.out;
+    // c3v.inputs[2] <== taker_price * should_place.out;
 
-    // c3v = hash((taker_remain!=0 and traded==0)*taker_account, (taker_remain!=0 and traded==0)*taker_remain, (taker_remain!=0 and traded==0)*taker_price)
-    component c3v = Poseidon(3);
-    component is_taker_zero = IsZero();
-    is_taker_zero.in <== taker_amount - traded;
-    component is_taker_not_zero = NOT();
-    is_taker_not_zero.in <== is_taker_zero.out;
-    component is_traded_zero = IsZero();
-    is_traded_zero.in <== traded;
-    component should_place = AND();
-    should_place.a <== is_maker_not_zero.out;
-    should_place.b <== is_traded_zero.out;
-    c3v.inputs[0] <== taker_account * should_place.out;
-    c3v.inputs[1] <== taker_remain * should_place.out;
-    c3v.inputs[2] <== taker_price * should_place.out;
+    // // c3kv = H(c3k, c3v)
+    // component c3kv = Poseidon(2);
+    // c3kv.inputs[0] <== c3k.out * should_place.out;
+    // c3kv.inputs[1] <== c3v.out;
 
-    // c3kv = hash(c3k, c3v)
-    component c3kv = Poseidon(2);
-    c3kv.inputs[0] <== c3k.out * should_place.out;
-    c3kv.inputs[1] <== c3v.out;
+    // component c3_verifier = SMTVerifier(256);
+    // c3_verifier.key <== c3k.out;
+    // c3_verifier.value <== c3kv.out
+    // c3_verifier.root <== new_merkle_root;
+    // for (i=0; i<256; i++) c3_verifier.path[i] <== taker_order_path[i];
 
-    component c3_verifier = SMTVerifier(256);
-    c3_verifier.key <== c3k.out;
-    c3_verifier.value <== c3kv.out
-    c3_verifier.root <== new_merkle_root;
-    for (i=0; i<256; i++) c3_verifier.path[i] <== taker_order_path[i];
+    // // c4k = hash(hash(b,q), ask_or_bid)
+    // component c4k = Poseidon(2);
+    // c4k.inputs[0] <== bq.out;
+    // c4k.inputs[1] <== ask_or_bid;
 
-    // c4k = hash(hash(b,q), ask_or_bid)
-    component c4k = Poseidon(2);
-    c4k.inputs[0] <== bq.out;
-    c4k.inputs[1] <== ask_or_bid;
+    // // c4v = hash(self_size+should_place*taker_remain, should_place*taker_price)
+    // component c4v = Poseidon(2);
+    // signal delta;
+    // delta <-- should_place.out * taker_remain;
+    // c4v.inputs[0] <== self_size + delta;
+    // c4v.inputs[1] <== should_place.out * taker_price;
 
-    // c4v = hash(self_size+should_place*taker_remain, should_place*taker_price)
-    component c4v = Poseidon(2);
-    signal delta;
-    delta <-- should_place.out * taker_remain;
-    c4v.inputs[0] <== self_size + delta;
-    c4v.inputs[1] <== should_place.out * taker_price;
+    // component c4kv = Poseidon(2);
+    // c4kv.inputs[0] <== c4k.out;
+    // c4kv.inputs[1] <== c4v.out;
 
-    component c4kv = Poseidon(2);
-    c4kv.inputs[0] <== c4k.out;
-    c4kv.inputs[1] <== c4v.out;
-
-    component c4_verifier = SMTVerifier(256);
-    c4_verifier.key <== c4k.out;
-    c4_verifier.value <== c4kv.out
-    c4_verifier.root <== new_merkle_root;
-    for (i=0; i<256; i++) c4_verifier.path[i] <== orderbook_self_path[i];
+    // component c4_verifier = SMTVerifier(256);
+    // c4_verifier.key <== c4k.out;
+    // c4_verifier.value <== c4kv.out
+    // c4_verifier.root <== new_merkle_root;
+    // for (i=0; i<256; i++) c4_verifier.path[i] <== orderbook_self_path[i];
 }
 
 /*
