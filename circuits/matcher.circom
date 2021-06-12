@@ -39,7 +39,9 @@ template TradeLimitCmd() {
     signal input oppo_size;
     signal input self_size;
     // next maker
-    signal input next_best_price;
+    signal input next_best_maker;
+    // previous taker
+    signal input prv_best_taker;
     // TODO mark as order=5
     signal input orderbook_self_path[256];
     // TODO order=2
@@ -76,6 +78,16 @@ template TradeLimitCmd() {
     signal input maker_base_frozen;
     // TODO order=6
     signal input maker_account_clear_path[256];
+
+    signal output taker_quote_tradable_output;
+    signal output taker_quote_frozen_output;
+    signal output taker_base_tradable_output;
+    signal output taker_base_frozen_output;
+    signal output maker_quote_tradable_output;
+    signal output maker_quote_frozen_output;
+    signal output maker_base_tradable_output;
+    signal output maker_base_frozen_output;
+
 
     signal taker_remain;
     signal maker_remain;
@@ -280,28 +292,28 @@ template TradeLimitCmd() {
     c1k.inputs[0] <== bq.out;
     c1k.inputs[1] <== bid_or_ask.out;
 
-    // c1v_old = H(oppo_size, is_not_zero(oppo_size) * next_best_price)
+    // c1v_old = H(oppo_size, is_not_zero(oppo_size) * next_best_maker)
     component c1v_old = Poseidon(2);
     component is_old_oppo_empty = IsZero();
     is_old_oppo_empty.in <== oppo_size;
     component is_old_oppo_not_empty = NOT();
     is_old_oppo_not_empty.in <== is_old_oppo_empty.out;
     c1v_old.inputs[0] <== oppo_size;
-    c1v_old.inputs[1] <== is_old_oppo_not_empty.out * next_best_price;
+    c1v_old.inputs[1] <== is_old_oppo_not_empty.out * next_best_maker;
 
     // c1kv_old = H(c1k, c1v_old)
     component c1kv_old = Poseidon(2);
     c1kv_old.inputs[0] <== c1k.out * is_old_oppo_not_empty.out;
     c1kv_old.inputs[1] <== c1v_old.out;
 
-    // c1v = H(oppo_size - traded, is_not_zero(oppo_size - traded) * next_best_price)
+    // c1v = H(oppo_size - traded, is_not_zero(oppo_size - traded) * next_best_maker)
     component c1v = Poseidon(2);
     c1v.inputs[0] <== oppo_size - traded;
     component is_oppo_empty = IsZero();
     is_oppo_empty.in <== oppo_size - traded;
     component is_oppo_not_empty = NOT();
     is_oppo_not_empty.in <== is_oppo_empty.out;
-    c1v.inputs[1] <== is_oppo_not_empty.out * next_best_price;
+    c1v.inputs[1] <== is_oppo_not_empty.out * next_best_maker;
 
     // c1kv = H(c1k, c1v)
     component c1kv = Poseidon(2);
@@ -339,7 +351,8 @@ template TradeLimitCmd() {
     c2kv_old.inputs[0] <== c2k.out;
     c2kv_old.inputs[1] <== c2v_old.out;
 
-    // c2v = H((maker_remain!=0)*maker_account, maker_remain, (maker_remain!=0)*maker_price, +2);
+    // keep_gate <- maker_remain ≠ 0
+    // c2v = H(kg * maker_account, maker_remain, kg * maker_price, kg * mab);
     component c2v = Poseidon(4);
     component is_maker_zero = IsZero();
     is_maker_zero.in <== maker_amount - traded;
@@ -363,58 +376,75 @@ template TradeLimitCmd() {
     root3.new_value <== c2kv.out;
     for (i=0; i<256; i++) root3.path[i] <== maker_order_path[i];
 
-    // place order:
-    //    taker_amount
     // c3k = H(taker_order_id)
-    // component c3k = Poseidon(1);
-    // c3k.inputs[0] <== taker_order_id;
-    // // c3v = H((taker_remain!=0 and traded==0)*taker_account, (taker_remain!=0 and traded==0)*taker_remain, (taker_remain!=0 and traded==0)*taker_price)
-    // component c3v = Poseidon(3);
-    // component is_taker_zero = IsZero();
-    // is_taker_zero.in <== taker_amount - traded;
-    // component is_taker_not_zero = NOT();
-    // is_taker_not_zero.in <== is_taker_zero.out;
-    // component is_traded_zero = IsZero();
-    // is_traded_zero.in <== traded;
-    // component should_place = AND();
-    // should_place.a <== is_maker_not_zero.out;
-    // should_place.b <== is_traded_zero.out;
-    // c3v.inputs[0] <== taker_account * should_place.out;
-    // c3v.inputs[1] <== taker_remain * should_place.out;
-    // c3v.inputs[2] <== taker_price * should_place.out;
+    component c3k = Poseidon(1);
+    c3k.inputs[0] <== taker_order_id;
 
-    // // c3kv = H(c3k, c3v)
-    // component c3kv = Poseidon(2);
-    // c3kv.inputs[0] <== c3k.out * should_place.out;
-    // c3kv.inputs[1] <== c3v.out;
+    signal tab;
+    tab <== ask_or_bid + 2;
+    // place_gate <- taker_remain≠0 and traded=0
+    // c3v = H(pg * taker_account, pg * taker_remain, pg * taker_price, pg * tab)
+    component c3v = Poseidon(4);
+    component is_taker_zero = IsZero();
+    is_taker_zero.in <== taker_amount - traded;
+    component is_taker_not_zero = NOT();
+    is_taker_not_zero.in <== is_taker_zero.out;
+    component is_traded_zero = IsZero();
+    is_traded_zero.in <== traded;
+    component should_place = AND();
+    should_place.a <== is_maker_not_zero.out;
+    should_place.b <== is_traded_zero.out;
+    c3v.inputs[0] <== taker_account * should_place.out;
+    c3v.inputs[1] <== taker_remain * should_place.out;
+    c3v.inputs[2] <== taker_price * should_place.out;
+    c3v.inputs[3] <== tab * should_place.out;
 
-    // component c3_verifier = SMTVerifier(256);
-    // c3_verifier.key <== c3k.out;
-    // c3_verifier.value <== c3kv.out
-    // c3_verifier.root <== new_merkle_root;
-    // for (i=0; i<256; i++) c3_verifier.path[i] <== taker_order_path[i];
+    // c3kv = H(c3k, c3v)
+    component c3kv = Poseidon(2);
+    c3kv.inputs[0] <== c3k.out * should_place.out;
+    c3kv.inputs[1] <== c3v.out;
 
-    // // c4k = hash(hash(b,q), ask_or_bid)
-    // component c4k = Poseidon(2);
-    // c4k.inputs[0] <== bq.out;
-    // c4k.inputs[1] <== ask_or_bid;
+    // root3 --> root4
+    component root4 = SMT(256);
+    root4.old_root <== root3.new_root;
+    root4.key <== c3k.out;
+    root4.old_value <== 0;
+    root4.new_value <== c3kv.out;
+    for (i=0; i<256; i++) root4.path[i] <== taker_order_path[i];
 
-    // // c4v = hash(self_size+should_place*taker_remain, should_place*taker_price)
-    // component c4v = Poseidon(2);
-    // signal delta;
-    // delta <-- should_place.out * taker_remain;
-    // c4v.inputs[0] <== self_size + delta;
-    // c4v.inputs[1] <== should_place.out * taker_price;
+    // c4k = H(H(b,q), ask_or_bid)
+    component c4k = Poseidon(2);
+    c4k.inputs[0] <== bq.out;
+    c4k.inputs[1] <== ask_or_bid;
 
-    // component c4kv = Poseidon(2);
-    // c4kv.inputs[0] <== c4k.out;
-    // c4kv.inputs[1] <== c4v.out;
+    // c4v_old = H(self_size, previous_best_taker)
+    component c4v_old = Poseidon(2);
+    c4v_old.inputs[0] <== self_size;
+    c4v_old.inputs[1] <== prv_best_taker;
 
-    // component c4_verifier = SMTVerifier(256);
-    // c4_verifier.key <== c4k.out;
-    // c4_verifier.value <== c4kv.out
-    // c4_verifier.root <== new_merkle_root;
-    // for (i=0; i<256; i++) c4_verifier.path[i] <== orderbook_self_path[i];
+    component c4kv_old = Poseidon(2);
+    c4kv_old.inputs[0] <== c4k.out;
+    c4kv_old.inputs[1] <== c4v_old.out;
+
+    // c4v = H(self_size + should_place * taker_remain, should_place * taker_price)
+    component c4v = Poseidon(2);
+    signal delta;
+    delta <-- should_place.out * taker_remain;
+    c4v.inputs[0] <== self_size + delta;
+    c4v.inputs[1] <== should_place.out * taker_price;
+
+    component c4kv = Poseidon(2);
+    c4kv.inputs[0] <== c4k.out;
+    c4kv.inputs[1] <== c4v.out;
+
+    // root4 --> root5
+    component root5 = SMT(256);
+    root5.old_root <== root4.new_root;
+    root5.key <== c4k.out;
+    root5.old_value <== c4kv_old.out;
+    root5.new_value <== c4kv.out;
+    for (i=0; i<256; i++) root5.path[i] <== orderbook_self_path[i];
+
 }
 
 /*
