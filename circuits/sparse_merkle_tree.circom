@@ -1,4 +1,7 @@
 include "../circomlib/poseidon.circom";
+include "../circomlib/comparators.circom";
+include "../circomlib/gates.circom";
+
 
 template Hasher() {
     signal input left;
@@ -9,6 +12,25 @@ template Hasher() {
     left ==> hasher.inputs[0];
     right ==> hasher.inputs[1];
     hash <== hasher.out;
+}
+
+template KV(n) {
+    signal input key;
+    signal input inputs[n];
+    signal output out;
+    component hasher = Poseidon(n);
+    var i;
+    for (i=0; i<n; i++) {
+        hasher.inputs[i] <== inputs[i];
+    }
+    component is_value_zero = IsZero();
+    is_value_zero.in <== hasher.out;
+    component is_value_not_zero = NOT();
+    is_value_not_zero.in <== is_value_zero.out;
+    component final = Poseidon(2);
+    final.inputs[0] <== is_value_not_zero.out * key;
+    final.inputs[1] <== hasher.out;
+    out <== final.out;
 }
 
 template SMTVerifier(height) {

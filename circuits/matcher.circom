@@ -60,9 +60,9 @@ template TradeLimitCmd() {
     signal input taker_base_tradable;
     signal input taker_base_frozen;
     // TODO order=1
-    signal input taker_account_path[256];
+    signal input taker_base_account_path[256];
     // TODO order=7
-    signal input taker_account_clear_path[256];
+    signal input taker_quote_account_path[256];
 
     signal input maker_order_id;
     signal input maker_account;
@@ -77,7 +77,8 @@ template TradeLimitCmd() {
     signal input maker_base_tradable;
     signal input maker_base_frozen;
     // TODO order=6
-    signal input maker_account_clear_path[256];
+    signal input maker_base_account_path[256];
+    signal input maker_quote_account_path[256];
 
     signal output taker_quote_tradable_output;
     signal output taker_quote_frozen_output;
@@ -237,7 +238,14 @@ template TradeLimitCmd() {
     root1.key <== taker_frozen_account.out;
     root1.old_value <== taker_claimed_account_val.out;
     root1.new_value <== taker_updated_account_val.out;
-    for (i=0; i<256; i++) root1.path[i] <== taker_account_path[i];
+    signal taker_frozen_account_path[256];
+    signal taker_frozen_account_path_ifb[256];
+    signal taker_frozen_account_path_ifa[256];
+    for (i=0; i<256; i++) {
+        taker_frozen_account_path_ifb[i] <== ask_or_bid * taker_quote_account_path[i];
+        taker_frozen_account_path_ifa[i] <== bid_or_ask.out * taker_base_account_path[i];
+        root1.path[i] <== taker_frozen_account_path_ifb[i] + taker_frozen_account_path_ifa[i];
+    }
 
     //======== calculate the trade amount ========
     // if bid1, ge
@@ -445,6 +453,54 @@ template TradeLimitCmd() {
     root5.new_value <== c4kv.out;
     for (i=0; i<256; i++) root5.path[i] <== orderbook_self_path[i];
 
+    /*
+    *    root5 --> root6
+    *    taker_base: +ab*(traded - taker_fee), -¬ab*(traded - taker_fee);
+    *    root6 --> root7
+    *    maker_base: +¬ab*(traded - maker_fee), -ab*(traded - maker_fee);
+    *    root7 --> root8
+    *    taker_quote: +¬ab*(traded * price - taker_fee), -ab*(traded * price - taker_fee);
+    *    root8 --> root9
+    *    maker_quote: +ab*(traded * price - maker_fee), -¬ab*(traded * price - maker_fee);
+    */
+
+    // TODO check 0 ≤ fee ≤ 0.1
+    signal taker_base_charge;
+    taker_base_charge <-- traded * taker_fee;
+    signal taker_get_base;
+    taker_get_base <-- traded - taker_base_charge;
+    signal taker_tradable_base_delta_ifb;
+    taker_tradable_base_delta_ifb <-- ask_or_bid * taker_get_base;
+    signal taker_tradable_base_delta_ifa;
+    taker_tradable_base_delta_ifa <-- bid_or_ask.out * taker_get_base;
+
+    // signal input maker_quote_tradable;
+    // signal input maker_quote_frozen;
+    // signal input maker_base_tradable;
+    // signal input maker_base_frozen;
+
+    // c5k = H(taker_account, base_currency)
+    component c5k = Poseidon(2);
+    c5k.inputs[0] <== taker_account;
+    c5k.inputs[1] <== base_currency;
+
+    component c5v_old = KV(2);
+    c5v_old.key <== c5k.out;
+    c5v_old.inputs[0] <== taker_quote_tradable;
+    c5v_old.inputs[1] <== taker_quote_frozen;
+
+    component c5v = KV(2);
+    c5v.key <== c5k.out;
+    c5v.inputs[0] <== taker_quote_tradable + taker_tradable_base_delta_ifb;
+    c5v.inputs[1] <== taker_quote_frozen - taker_tradable_base_delta_ifa;
+
+    component root6 = SMT(256);
+    root6.old_root <== root5.new_root;
+    root6.key <== c5k.out;
+    root6.old_value <== c5v_old.out;
+    root6.new_value <== c5v.out;
+    for (i=0; i<256; i++) root6.path[i] <== taker_base_account_path[i];
+
 }
 
 /*
@@ -506,10 +562,5 @@ template OrderbookValidator() {
     smt1.value <== best_price;
     for (i=0; i<256; i++) smt1.path[i] <== price_path[i];
 }
-
-// template Matcher() {
-//     signal input account_id;
-//     signal input pair;
-// }
 
 component main = TradeLimitCmd();
