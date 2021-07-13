@@ -472,7 +472,7 @@ template TradeLimitCmd() {
     signal taker_tradable_base_delta_ifb;
     taker_tradable_base_delta_ifb <-- ask_or_bid * taker_get_base;
     signal taker_tradable_base_delta_ifa;
-    taker_tradable_base_delta_ifa <-- bid_or_ask.out * taker_get_base;
+    taker_frozen_base_delta_ifa <-- bid_or_ask.out * taker_get_base;
 
     // signal input maker_quote_tradable;
     // signal input maker_quote_frozen;
@@ -486,14 +486,14 @@ template TradeLimitCmd() {
 
     component c5v_old = KV(2);
     c5v_old.key <== c5k.out;
-    c5v_old.inputs[0] <== taker_quote_tradable;
-    c5v_old.inputs[1] <== taker_quote_frozen;
+    c5v_old.inputs[0] <== taker_base_tradable;
+    c5v_old.inputs[1] <== taker_base_frozen;
 
     component c5v = KV(2);
     c5v.key <== c5k.out;
-    c5v.inputs[0] <== taker_quote_tradable + taker_tradable_base_delta_ifb;
-    c5v.inputs[1] <== taker_quote_frozen - taker_tradable_base_delta_ifa;
-
+    c5v.inputs[0] <== taker_base_tradable + taker_tradable_base_delta_ifb;
+    c5v.inputs[1] <== taker_base_frozen - taker_frozen_base_delta_ifa;
+ 
     component root6 = SMT(256);
     root6.old_root <== root5.new_root;
     root6.key <== c5k.out;
@@ -501,6 +501,32 @@ template TradeLimitCmd() {
     root6.new_value <== c5v.out;
     for (i=0; i<256; i++) root6.path[i] <== taker_base_account_path[i];
 
+    // TODO check 0 ≤ fee ≤ 0.1
+    signal maker_base_charge;
+    maker_base_charge <-- traded * maker_fee;
+    signal maker_get_base;
+    maker_get_base <-- traded - maker_base_charge;
+    signal maker_tradable_base_delta_ifa;
+    maker_tradable_base_delta_ifa <-- bid_or_ask.out * maker_get_base;
+    signal maker_frozen_base_delta_ifb;
+    maker_frozen_base_delta_ifb <-- ask_or_bid * maker_get_base;
+
+
+    // maker_base: +¬ab*(traded - maker_fee), -ab*(traded - maker_fee);
+    // c6k = H(maker_account, base_currency)
+    component c6k = Poseidon(2);
+    c6k.inputs[0] <== maker_account;
+    c6k.inputs[1] <== base_currency;
+
+    component c6v_old = KV(2);
+    c6v_old.key <== c6k.out;
+    c6v_old.inputs[0] <== maker_base_tradable;
+    c6v_old.inputs[1] <== maker_base_frozen;
+
+    component c6v = KV(2);
+    c6v.key <== c6k.out;
+    c5v.inputs[0] <== maker_base_tradable + maker_tradable_base_delta_ifa;
+    c5v.inputs[1] <== maker_base_frozen - maker_frozen_base_delta_ifb;
 }
 
 /*

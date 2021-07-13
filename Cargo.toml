@@ -1,9 +1,25 @@
 [package]
 name = "zkmatcher"
 version = "0.1.0"
+description = "ZK prover for matcher over circom circuits based on zkutil and bellman_ce"
 authors = ["UINB Tech"]
 edition = "2018"
 
+[lib]
+crate-type = ["cdylib", "lib"]
+
 [dependencies]
-dusk-plonk = "0.8.0"
-rand = "0.8.3"
+rand = "0.4"
+byteorder = "1"
+exitcode = "1.1.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+num-bigint = "0.2.3"
+num-traits = "0.2.8"
+itertools = "0.8.1"
+cfg-if = "0.1.10"
+hex-literal = "0.2.1"
+bellman_ce = { version = "0.3.4", default-features = false }
+
+[features]
+default = ["bellman_ce/multicore"]
